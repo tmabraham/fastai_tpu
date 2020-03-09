@@ -1,0 +1,3 @@
+2019-12-05 01:45:02.609962: I    1890 torch_xla/csrc/tensor_util.cpp:28] Using BF16 data type for floating point values
+hello
+epoch     train_loss  valid_loss  accuracy  time    
