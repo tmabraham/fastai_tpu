@@ -18,63 +18,53 @@ from fastai.basic_train import *
 
 def len_parallelloader(self): return len(self._loader._loader)
 pl.PerDeviceLoader.__len__ = len_parallelloader
-  
+
+
+
+
 
 class TPUDistributed(Callback):
     def __init__(self, learn:Learner):
         self.device = xm.xla_device()
-    
-    def _change_dl(self,dl, shuffle):
-        old_dl = dl
-        sampler = torch.utils.data.distributed.DistributedSampler(
-            dl.dataset,
-            num_replicas=xm.xrt_world_size(),
-            rank=xm.get_ordinal(),
-            shuffle=shuffle)
-        new_dl = dl.new(shuffle=False, sampler=sampler)
-        return old_dl,new_dl,sampler
 
+    def _wrap_dl(self, dl):
 
-  def begin_fit(self):
+        if isinstance(dl, pl.ParallelLoader):
+            return dl
+        else:
+            return pl.ParallelLoader(DistributedDL.from_dl(dl, xm.get_ordinal(), xm.xrt_world_size()), [self.device]).per_device_loader(self.device)
+
+    def begin_fit(self):
         self.learn.model = self.learn.model.to(self.device)
         self.learn.opt.lr = self.learn.opt.lr*xm.xrt_world_size()
+        self.old_dls = list(self.dls)
+        self.learn.dls.loaders = [self._wrap_dl(dl) for dl in self.dls]
 
-        shuffle = self.data.train_dl.init_kwargs['shuffle'] if hasattr(self.data.train_dl, 'init_kwargs') else True
-        self.old_sampler_train_dl,self.data.train_dl,self.train_sampler = self._change_dl(self.data.train_dl, shuffle)
-        if hasattr(self.data, 'valid_dl') and self.data.valid_dl is not None:
-            self.old_sampler_valid_dl,self.data.valid_dl,self.valid_sampler = self._change_dl(self.data.valid_dl, shuffle)
-  def begin_epoch(self,**kwargs:Any)->None:
-    self.old_train_dl = self.data.train_dl
-    self.learn.data.train_dl = pl.ParallelLoader(self.old_train_dl, [self.device]).per_device_loader(self.device)
-    self.learn.data.train_dl.dataset = None #self.old_train_dl.dataset
-    if hasattr(self.data, 'valid_dl') and self.data.valid_dl is not None:
-      self.old_valid_dl = self.learn.data.valid_dl
-      self.learn.data.valid_dl = pl.ParallelLoader(self.old_valid_dl, [self.device]).per_device_loader(self.device)      
 
-      self.learn.data.valid_dl.dataset = self.old_valid_dl.dataset
-      self.learn.data.valid_dl.dl = self.learn.data.valid_dl._loader._loader
+    def begin_epoch(self):
+        for dl in self.dls: dl.set_epoch(self.epoch)
+
+    def begin_train(self):    self.learn.dl = self._wrap_dl(self.learn.dl)
 
     def after_backward(self):
         xm.optimizer_step(self.learn.opt)
         self.learn.opt.zero_grad()
         return CancelBatchException
-    
-    def after_epoch(self):
-        self.learn.data.train_dl = self.old_train_dl
-        self.learn.data.valid_dl = self.old_valid_dl
-  
-    def after_train(self):
-        self.learn.data.train_dl = self.old_sampler_train_dl
-        self.learn.data.valid_dl = self.old_sampler_valid_dl
+
+
+    def begin_validate(self): self.learn.dl = self._wrap_dl(self.learn.dl)
+
+    def after_fit(self):
+        self.learn.dls.loaders = self.old_dls
 
 
 def _to_tpu_distributed(learn:Learner) -> Learner:
     learn.callback_fns.append(TPUDistributed)
     return learn
-  
+
 
 Learner.to_tpu_distributed = _to_tpu_distributed
-  
+
 
 def filelist2df(path):
     df = pd.read_csv(path, delimiter='/', header=None, names=['label', 'name'])
@@ -96,9 +86,8 @@ def train_loop():
                  batch_tfms=aug_transforms(flip_vert=True, max_lighting=0.1, max_zoom=1.05, max_warp=0.)
                  )
     dls = food.dataloaders(train_df.values,bs=64)
-    learn = cnn_learner(dls, models.resnet152, metrics=accuracy)
-    learn.fit_tpu(3)
+    learn = cnn_learner(dls, models.resnet152, metrics=accuracy).to_tpu_distributed()
+    learn.fit(3)
 
 if __name__ == "__main__":
   xmp.spawn(train_loop,args=())
-
