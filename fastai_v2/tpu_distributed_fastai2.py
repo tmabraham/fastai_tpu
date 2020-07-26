@@ -14,29 +14,30 @@ from fastai2.callback.all import *
 from fastai2.vision.all import *
 from fastai2.distributed import *
 
-
-def len_parallelloader(self): return len(self._loader._loader)
-pl.PerDeviceLoader.__len__ = len_parallelloader
+#This is only needed for PyTorch XLA 1.5
+@patch
+def __len__(self: pl.PerDeviceLoader):
+    return len(self._loader._loader)
 
 @patch
-def set_epoch(self:pl.PerDeviceLoader,epoch): 
+def set_epoch(self: pl.PerDeviceLoader,epoch): 
        self._loader._loader.set_epoch(epoch)
 
 
 
-
+# Much of the below code is inspired by the GPU distributed callback
 class TPUDistributed(Callback):
     def __init__(self):
         self.device = xm.xla_device()
 
     def _wrap_dl(self, dl):
-
         if isinstance(dl, pl.PerDeviceLoader):
             return dl
         else:
-            dl.fake_l.num_workers=0 # for some reason, needed for it to work. Investigate further
-            distributed_dl = DistributedDL.from_dl(dl, xm.get_ordinal(), xm.xrt_world_size())
-            distributed_dl.epoch=0
+            dl = dl.to(self.device)
+            dl.fake_l.num_workers=0 # For some reason, needed for it to work (something on fastai2's end). Need to investigate further
+            distributed_dl = DistributedDL.from_dl(dl, xm.get_ordinal(), xm.xrt_world_size()) # Use existing distributed functionality 
+            #distributed_dl.epoch=0
             return pl.ParallelLoader(distributed_dl, [self.device]).per_device_loader(self.device)
 
     def begin_fit(self):
@@ -53,7 +54,6 @@ class TPUDistributed(Callback):
 
     def begin_train(self):    
         self.learn.dl = self._wrap_dl(self.learn.dl)
-        #print(next(iter(self.learn.dl))[0].type()) <-- returns a regular PyTorch Tensor
 
     def after_backward(self):
         xm.optimizer_step(self.learn.opt)
@@ -81,6 +81,7 @@ def filelist2df(path):
 path = untar_data(URLs.FOOD)
 train_path = path/'train.txt'
 test_path = path/'test.txt'
+
 
 def train_loop(index):
     print('index: ',index)
