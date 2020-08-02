@@ -15,9 +15,25 @@ from fastai2.vision.all import *
 from fastai2.distributed import *
 
 #This is only needed for PyTorch XLA 1.5
+#@patch
+#def __len__(self: pl.PerDeviceLoader):
+#    return len(self._loader._loader)
+
+def _fa_rebuild_tensor    (cls, *args, **kwargs): return cls(torch._utils._rebuild_tensor_v2 (*args, **kwargs))
+def _fa_rebuild_qtensor   (cls, *args, **kwargs): return cls(torch._utils._rebuild_qtensor   (*args, **kwargs))
+def _fa_rebuild_xla_tensor(cls, *args, **kwargs): return cls(torch._utils._rebuild_xla_tensor(*args, **kwargs))
+
 @patch
-def __len__(self: pl.PerDeviceLoader):
-    return len(self._loader._loader)
+def __reduce_ex__(self:TensorBase, proto):
+        torch.utils.hooks.warn_if_has_hooks(self)
+        if self.device.type == 'xla': 
+            args = (type(self), self.cpu().numpy(), self.dtype, str(self.device), self.requires_grad)
+            return (_fa_rebuild_xla_tensor, args)
+        
+        args = (type(self), self.storage(), self.storage_offset(), tuple(self.size()), self.stride())
+        if self.is_quantized: args = args + (self.q_scale(), self.q_zero_point())
+        f = _fa_rebuild_qtensor if self.is_quantized else  _fa_rebuild_tensor
+        return (f, args + (self.requires_grad, OrderedDict()))
 
 @patch
 def set_epoch(self: pl.PerDeviceLoader,epoch): 
@@ -37,7 +53,7 @@ class TPUDistributed(Callback):
             dl = dl.to(self.device)
             dl.fake_l.num_workers=0 # For some reason, needed for it to work (something on fastai2's end). Need to investigate further
             distributed_dl = DistributedDL.from_dl(dl, xm.get_ordinal(), xm.xrt_world_size()) # Use existing distributed functionality 
-            #distributed_dl.epoch=0
+            distributed_dl.epoch=0
             return pl.ParallelLoader(distributed_dl, [self.device]).per_device_loader(self.device)
 
     def begin_fit(self):
@@ -94,7 +110,7 @@ def train_loop(index):
                  item_tfms=Resize(224)
 #                 batch_tfms=aug_transforms(flip_vert=True, max_lighting=0.1, max_zoom=1.05, max_warp=0.) <-- ignore batch (on-TPU) tfms for now
                  )
-    dls = food.dataloaders(train_df.values,bs=64)
+    dls = food.dataloaders(train_df.values,bs=32)
     learn = cnn_learner(dls, resnet152, metrics=accuracy).to_tpu_distributed()
     learn.fit(3)
 
