@@ -36,6 +36,18 @@ def __reduce_ex__(self:TensorBase, proto):
         return (f, args + (self.requires_grad, OrderedDict()))
 
 @patch
+def __getstate__(self: Optimizer):
+        optim_dict = self.__dict__.copy()
+        modified_dict = {**optim_dict, 'param_groups': self.param_groups} #this change needed since PyTorch XLA wants it!
+        return modified_dict
+
+@patch
+def __setstate__(self: Optimizer,state):
+        print('setstate Optimizer dict: ', self.__dict__.keys())
+        del state['param_groups']
+        self.__dict__.update(state)
+
+@patch
 def set_epoch(self: pl.PerDeviceLoader,epoch): 
        self._loader._loader.set_epoch(epoch)
 
@@ -110,7 +122,7 @@ def train_loop(index):
                  item_tfms=Resize(224)
 #                 batch_tfms=aug_transforms(flip_vert=True, max_lighting=0.1, max_zoom=1.05, max_warp=0.) <-- ignore batch (on-TPU) tfms for now
                  )
-    dls = food.dataloaders(train_df.values,bs=32)
+    dls = food.dataloaders(train_df.values,bs=128)
     learn = cnn_learner(dls, resnet152, metrics=accuracy).to_tpu_distributed()
     learn.fit(3)
 
