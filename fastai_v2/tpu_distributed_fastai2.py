@@ -62,7 +62,7 @@ class TPUDistributed(Callback):
         if isinstance(dl, pl.PerDeviceLoader):
             return dl
         else:
-            dl = dl.to(self.device)
+            #dl = dl.to(self.device)
             dl.fake_l.num_workers=0 # For some reason, needed for it to work (something on fastai2's end). Need to investigate further
             distributed_dl = DistributedDL.from_dl(dl, xm.get_ordinal(), xm.xrt_world_size()) # Use existing distributed functionality 
             distributed_dl.epoch=0
@@ -83,6 +83,9 @@ class TPUDistributed(Callback):
     def begin_train(self):    
         self.learn.dl = self._wrap_dl(self.learn.dl)
 
+    def begin_batch(self):
+       self.learn.xb = [xb_item.to(self.device) for xb_item in self.xb]
+       self.learn.yb = [yb_item.to(self.device) for yb_item in self.yb]
     def after_backward(self):
         xm.optimizer_step(self.learn.opt)
         self.learn.opt.zero_grad()
