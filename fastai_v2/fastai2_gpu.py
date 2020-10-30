@@ -1,6 +1,6 @@
-from fastai2.basics import *
-from fastai2.callback.all import *
-from fastai2.vision.all import *
+from fastai.basics import *
+from fastai.callback.all import *
+from fastai.vision.all import *
 from torchvision import models
 
 def filelist2df(path):

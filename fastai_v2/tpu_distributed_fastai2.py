@@ -9,10 +9,10 @@ import torch_xla.distributed.parallel_loader as pl
 import torch_xla.distributed.xla_multiprocessing as xmp
 import torch
 
-import fastai2
-from fastai2.callback.all import *
-from fastai2.vision.all import *
-from fastai2.distributed import *
+import fastai
+from fastai.callback.all import *
+from fastai.vision.all import *
+from fastai.distributed import *
 
 #This is only needed for PyTorch XLA 1.5
 #@patch
@@ -63,7 +63,7 @@ class TPUDistributed(Callback):
             return dl
         else:
             #dl = dl.to(self.device)
-            dl.fake_l.num_workers=0 # For some reason, needed for it to work (something on fastai2's end). Need to investigate further
+            dl.fake_l.num_workers=0 # For some reason, needed for it to work (something on fastai's end). Need to investigate further
             distributed_dl = DistributedDL.from_dl(dl, xm.get_ordinal(), xm.xrt_world_size()) # Use existing distributed functionality 
             distributed_dl.epoch=0
             return pl.ParallelLoader(distributed_dl, [self.device]).per_device_loader(self.device)
@@ -125,9 +125,9 @@ def train_loop(index):
                  item_tfms=Resize(224)
 #                 batch_tfms=aug_transforms(flip_vert=True, max_lighting=0.1, max_zoom=1.05, max_warp=0.) <-- ignore batch (on-TPU) tfms for now
                  )
-    dls = food.dataloaders(train_df.values,bs=128)
+    dls = food.dataloaders(train_df.values,bs=16)
     learn = cnn_learner(dls, resnet152, metrics=accuracy).to_tpu_distributed()
     learn.fit(3)
 
 if __name__ == "__main__":
-  xmp.spawn(train_loop,nprocs=8,args=())
+  xmp.spawn(train_loop,nprocs=1,args=())
