@@ -13,11 +13,7 @@ import fastai
 from fastai.callback.all import *
 from fastai.vision.all import *
 from fastai.distributed import *
-
-#This is only needed for PyTorch XLA 1.5
-#@patch
-#def __len__(self: pl.PerDeviceLoader):
-#    return len(self._loader._loader)
+from fastai.data.load import _FakeLoader
 
 def _fa_rebuild_tensor    (cls, *args, **kwargs): return cls(torch._utils._rebuild_tensor_v2 (*args, **kwargs))
 def _fa_rebuild_qtensor   (cls, *args, **kwargs): return cls(torch._utils._rebuild_qtensor   (*args, **kwargs))
@@ -52,6 +48,13 @@ def set_epoch(self: pl.PerDeviceLoader,epoch):
        self._loader._loader.set_epoch(epoch)
 
 
+@patch
+def _broadcast(self: DistributedDL,t,rank):
+    "Broadcasts t from rank `rank` to all other ranks. Returns t so t is same for all ranks after call."
+    t = LongTensor(t)
+    torch.distributed.broadcast(t,rank)
+    return t.cpu().tolist()
+
 
 # Much of the below code is inspired by the GPU distributed callback
 class TPUDistributed(Callback):
@@ -64,11 +67,10 @@ class TPUDistributed(Callback):
         else:
             #dl = dl.to(self.device)
             dl.fake_l.num_workers=0 # For some reason, needed for it to work (something on fastai's end). Need to investigate further
-            distributed_dl = DistributedDL.from_dl(dl, xm.get_ordinal(), xm.xrt_world_size()) # Use existing distributed functionality 
-            distributed_dl.epoch=0
+            distributed_dl = DistributedDL(dl, xm.get_ordinal(), xm.xrt_world_size()) # Use existing distributed functionality 
             return pl.ParallelLoader(distributed_dl, [self.device]).per_device_loader(self.device)
 
-    def begin_fit(self):
+    def before_fit(self):
         xm.master_print('begin fit')
         self.learn.model = self.learn.model.to(self.device)
         for h in self.opt.hypers: h['lr'] *= xm.xrt_world_size()
@@ -77,13 +79,13 @@ class TPUDistributed(Callback):
         self.learn.dls.loaders = [self._wrap_dl(dl) for dl in self.dls]
         for dl in self.dls: dl.set_epoch(self.epoch)
 
-    def begin_epoch(self):
-        for dl in self.dls: dl.set_epoch(self.epoch)
+    #def before_epoch(self):
+    #    for dl in self.dls: dl.set_epoch(self.epoch)
 
-    def begin_train(self):    
+    def before_train(self):    
         self.learn.dl = self._wrap_dl(self.learn.dl)
 
-    def begin_batch(self):
+    def before_batch(self):
        self.learn.xb = [xb_item.to(self.device) for xb_item in self.xb]
        self.learn.yb = [yb_item.to(self.device) for yb_item in self.yb]
     def after_backward(self):
@@ -92,7 +94,7 @@ class TPUDistributed(Callback):
         return CancelBatchException
 
 
-    def begin_validate(self): self.learn.dl = self._wrap_dl(self.learn.dl)
+    def before_validate(self): self.learn.dl = self._wrap_dl(self.learn.dl)
 
     def after_fit(self):
         self.learn.dls.loaders = self.old_dls
@@ -125,9 +127,9 @@ def train_loop(index):
                  item_tfms=Resize(224)
 #                 batch_tfms=aug_transforms(flip_vert=True, max_lighting=0.1, max_zoom=1.05, max_warp=0.) <-- ignore batch (on-TPU) tfms for now
                  )
-    dls = food.dataloaders(train_df.values,bs=16)
+    dls = food.dataloaders(train_df.values,bs=256)
     learn = cnn_learner(dls, resnet152, metrics=accuracy).to_tpu_distributed()
     learn.fit(3)
 
 if __name__ == "__main__":
-  xmp.spawn(train_loop,nprocs=1,args=())
+  xmp.spawn(train_loop,nprocs=8,args=())
