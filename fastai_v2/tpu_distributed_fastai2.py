@@ -53,14 +53,15 @@ class TPUDistributedDL(TfmdDL):
     "A `TfmdDL` which splits a batch into equal size pieces for each TPU core"
     def __init__(self,dl,rank,world_size):
         store_attr()
-        self.bs,self.device,self.drop_last,self.dataset,fake = attrgetter('bs','device','drop_last','dataset','fake_l')(dl)
+        self.bs,self.device,self.num_workers,self.drop_last,self.dataset,self.offs,fake = \
+            attrgetter('bs','device','num_workers','drop_last','dataset','offs','fake_l')(dl)
         self.fake_l = _FakeLoader(self, fake.pin_memory, fake.num_workers, fake.timeout, persistent_workers=fake.persistent_workers)
         self.SERIAL_EXEC = xmp.MpSerialExecutor()
 
     def _to_detach(self,b,cpu=True,gather=True): return to_detach(b,cpu,gather) # member func so we can override for test
     def __len__(self): return _round_to_multiple(len(self.dl),self.world_size)//self.world_size
     def get_idxs(self):
-        idxs = self.SERIAL_EXEC.run(self.dl.get_idxs()) # compute get_idxs in all ranks (we'll only use rank 0 but size must be consistent)
+        idxs = self.SERIAL_EXEC.run(self.dl.get_idxs) # compute get_idxs in all ranks (we'll only use rank 0 but size must be consistent)
         self.n = len(idxs)              # we assumed n was dl.n but we really care about number of idxs
         # add extra samples to make it evenly divisible
         self.n_padded = _round_to_multiple(self.n,self.world_size)
@@ -91,6 +92,7 @@ class TPUDistributedDL(TfmdDL):
         return apply(_inner,b) if gather and all(hasattr(self,o) for o in ('i','n','n_padded')) else b
 
 
+
 # Much of the below code is inspired by the GPU distributed callback
 class TPUDistributed(Callback):
     def __init__(self):
@@ -112,7 +114,7 @@ class TPUDistributed(Callback):
         self.old_dls = list(self.dls)
         print('wrapping dls')
         self.learn.dls.loaders = [self._wrap_dl(dl) for dl in self.dls]
-        for dl in self.dls: dl.set_epoch(self.epoch)
+#        for dl in self.dls: dl.set_epoch(self.epoch)
 
     #def before_epoch(self):
     #    for dl in self.dls: dl.set_epoch(self.epoch)
